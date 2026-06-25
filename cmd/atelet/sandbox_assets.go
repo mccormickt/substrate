@@ -45,6 +45,10 @@ const sandboxManifestName = "manifest.json"
 // ponytail: 8GiB ceiling, make it a flag if a rootfs ever needs more.
 var maxAssetBytes int64 = 8 << 30
 
+func actorSandboxAssetsFile(actorTemplateNamespace, actorTemplateName, actorID string) string {
+	return filepath.Join(actorPath(actorTemplateNamespace, actorTemplateName, actorID), "sandbox-assets.json")
+}
+
 // assetEntry is one content-addressed sandbox asset (url + sha256).
 type assetEntry struct {
 	URL    string `json:"url"`
@@ -171,7 +175,7 @@ func writeSandboxRecord(actorTemplateNamespace, actorTemplateName, actorID strin
 	if err != nil {
 		return fmt.Errorf("while marshaling sandbox record: %w", err)
 	}
-	path := ateompath.ActorSandboxAssetsFile(actorTemplateNamespace, actorTemplateName, actorID)
+	path := actorSandboxAssetsFile(actorTemplateNamespace, actorTemplateName, actorID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("while creating actor dir: %w", err)
 	}
@@ -184,7 +188,7 @@ func writeSandboxRecord(actorTemplateNamespace, actorTemplateName, actorID strin
 // readSandboxRecord loads the actor's on-node sandbox record written at
 // Run/Restore.
 func readSandboxRecord(actorTemplateNamespace, actorTemplateName, actorID string) (*sandboxAssetsRecord, error) {
-	path := ateompath.ActorSandboxAssetsFile(actorTemplateNamespace, actorTemplateName, actorID)
+	path := actorSandboxAssetsFile(actorTemplateNamespace, actorTemplateName, actorID)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("while reading sandbox record %s: %w", path, err)

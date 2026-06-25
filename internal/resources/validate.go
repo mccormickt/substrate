@@ -136,3 +136,24 @@ func ValidateSnapshotURIPrefix(prefix string) error {
 	}
 	return nil
 }
+
+// ValidateLocalSnapshotPrefix ensures a local snapshot prefix is safe to use as a
+// single path component under the per-actor local-checkpoint directory. Unlike a
+// snapshot URI (whose local paths are derived from the separately validated actor
+// ref), the local prefix is itself joined onto LocalCheckpointsDir(...) to build
+// host paths atelet MkdirAll/Rename/ReadFile/copies, so a value containing a path
+// separator or ".." could escape that directory. The producer emits a
+// single-component name (<actorID>-<timestamp>-<rand>), so requiring a non-empty,
+// separator-free, local name accepts every legitimate value.
+func ValidateLocalSnapshotPrefix(prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("local snapshot prefix must be non-empty")
+	}
+	if strings.ContainsRune(prefix, '/') {
+		return fmt.Errorf("invalid local snapshot prefix %q: must not contain a path separator", prefix)
+	}
+	if prefix == "." || prefix == ".." {
+		return fmt.Errorf("invalid local snapshot prefix %q: must be a local name", prefix)
+	}
+	return nil
+}

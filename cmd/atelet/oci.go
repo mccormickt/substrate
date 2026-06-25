@@ -27,8 +27,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/agent-substrate/substrate/cmd/atelet/internal/memorypullcache"
-	"github.com/agent-substrate/substrate/internal/ateompath"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -51,14 +49,14 @@ const (
 	ActorIDFileName = "actor-id"
 )
 
-func prepareOCIDirectory(ctx context.Context, pullCache *memorypullcache.MemoryPullCache, actorTemplateNamespace, actorTemplateName, actorID, containerName, ref string, args []string, env []string, annotations map[string]string, netns string, identityDir string) error {
+func prepareOCIDirectory(ctx context.Context, pullCache imagePuller, actorTemplateNamespace, actorTemplateName, actorID, containerName, ref string, args []string, env []string, annotations map[string]string, netns string, identityDir string) error {
 	tracer := otel.Tracer("prepareOCIDirectory")
 
 	ctx, span := tracer.Start(ctx, "prepareOCIDirectory")
 	span.SetAttributes(attribute.String("image", ref))
 	defer span.End()
 
-	bundlePath := ateompath.OCIBundlePath(actorTemplateNamespace, actorTemplateName, actorID, containerName)
+	bundlePath := ociBundlePath(actorTemplateNamespace, actorTemplateName, actorID, containerName)
 	rootPath := path.Join(bundlePath, "rootfs")
 
 	if err := os.RemoveAll(rootPath); err != nil {

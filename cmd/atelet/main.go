@@ -157,7 +157,6 @@ func main() {
 	}
 
 	wmService := NewService(
-		ctx,
 		ateomDialer,
 		wrappedAnonGCS,
 		wrappedGCS,
@@ -183,29 +182,78 @@ func main() {
 type AteomHerder struct {
 	ateletpb.UnimplementedAteomHerderServer
 
-	ateomDialer   *AteomDialer
-	pullCache     *memorypullcache.MemoryPullCache
+	ateomDialer   ateomPodDialer
+	pullCache     imagePuller
 	anonGCSClient ategcs.ObjectStorage
 	gcsClient     ategcs.ObjectStorage
+}
+
+type ateomPodDialer interface {
+	DialAteomPod(context.Context, string) (*grpc.ClientConn, error)
+}
+
+type imagePuller interface {
+	Fetch(ctx context.Context, ref string) (io.ReadCloser, error)
+}
+
+var actorPath = ateompath.ActorPath
+
+func actorIdentityDirPath(actorTemplateNamespace, actorTemplateName, actorID string) string {
+	return filepath.Join(actorPath(actorTemplateNamespace, actorTemplateName, actorID), "identity")
+}
+
+func runSCStateDir(actorTemplateNamespace, actorTemplateName, actorID string) string {
+	return filepath.Join(actorPath(actorTemplateNamespace, actorTemplateName, actorID), "runsc-state")
+}
+
+func ociBundleDir(actorTemplateNamespace, actorTemplateName, actorID string) string {
+	return filepath.Join(actorPath(actorTemplateNamespace, actorTemplateName, actorID), "bundles")
+}
+
+func ociBundlePath(actorTemplateNamespace, actorTemplateName, actorID, containerName string) string {
+	return filepath.Join(ociBundleDir(actorTemplateNamespace, actorTemplateName, actorID), containerName)
+}
+
+func checkpointStateDir(actorTemplateNamespace, actorTemplateName, actorID string) string {
+	return filepath.Join(actorPath(actorTemplateNamespace, actorTemplateName, actorID), "checkpoint-state")
+}
+
+func localCheckpointsDir(actorTemplateNamespace, actorTemplateName, actorID string) string {
+	return filepath.Join(actorPath(actorTemplateNamespace, actorTemplateName, actorID), "local-checkpoint")
+}
+
+func restoreStateDir(actorTemplateNamespace, actorTemplateName, actorID string) string {
+	return filepath.Join(actorPath(actorTemplateNamespace, actorTemplateName, actorID), "restore-state")
+}
+
+func pidFileDir(actorTemplateNamespace, actorTemplateName, actorID string) string {
+	return filepath.Join(actorPath(actorTemplateNamespace, actorTemplateName, actorID), "pidfiles")
 }
 
 var _ ateletpb.AteomHerderServer = (*AteomHerder)(nil)
 
 // NewService creates a new WorkersManagerService.
 func NewService(
-	ctx context.Context,
 	ateomDialer *AteomDialer,
 	anonGCSClient ategcs.ObjectStorage,
 	gcsClient ategcs.ObjectStorage,
 	pullCache *memorypullcache.MemoryPullCache,
 ) *AteomHerder {
-	wms := &AteomHerder{
+	return newAteomHerder(ateomDialer, pullCache, anonGCSClient, gcsClient)
+}
+
+func newAteomHerder(
+	ateomDialer ateomPodDialer,
+	pullCache imagePuller,
+	anonGCSClient ategcs.ObjectStorage,
+	gcsClient ategcs.ObjectStorage,
+) *AteomHerder {
+	return &AteomHerder{
 		ateomDialer:   ateomDialer,
 		pullCache:     pullCache,
 		anonGCSClient: anonGCSClient,
 		gcsClient:     gcsClient,
 	}
-	return wms
 }
 
 func (s *AteomHerder) Run(ctx context.Context, req *ateletpb.RunRequest) (*ateletpb.RunResponse, error) {
@@ -319,7 +367,7 @@ func (s *AteomHerder) Checkpoint(ctx context.Context, req *ateletpb.CheckpointRe
 		return nil, err
 	}
 
-	checkpointDir := ateompath.CheckpointStateDir(ns, tmpl, actorID)
+	checkpointDir := checkpointStateDir(ns, tmpl, actorID)
 
 	client, err := s.dialAteom(ctx, req.GetTargetAteomUid())
 	if err != nil {
@@ -358,7 +406,7 @@ func (s *AteomHerder) Checkpoint(ctx context.Context, req *ateletpb.CheckpointRe
 }
 
 func (s *AteomHerder) moveLocalCheckpoint(ctx context.Context, req *ateletpb.CheckpointRequest, checkpointDir string, rec *sandboxAssetsRecord) error {
-	localCheckpointPath := filepath.Join(ateompath.LocalCheckpointsDir(req.GetActorTemplateNamespace(), req.GetActorTemplateName(), req.GetActorId()), req.GetLocalConfig().GetSnapshotPrefix())
+	localCheckpointPath := filepath.Join(localCheckpointsDir(req.GetActorTemplateNamespace(), req.GetActorTemplateName(), req.GetActorId()), req.GetLocalConfig().GetSnapshotPrefix())
 	if err := os.MkdirAll(localCheckpointPath, 0o700); err != nil {
 		return fmt.Errorf("while creating local checkpoint directory: %w", err)
 	}
@@ -444,7 +492,7 @@ func (s *AteomHerder) Restore(ctx context.Context, req *ateletpb.RestoreRequest)
 		return nil, fmt.Errorf("while resetting actor dirs: %w", err)
 	}
 
-	checkpointDir := ateompath.RestoreStateDir(ns, tmpl, actorID)
+	checkpointDir := restoreStateDir(ns, tmpl, actorID)
 
 	// The snapshot is self-describing: recover the sandbox binaries that created
 	// it from the manifest stored beside the checkpoint images (the Restore
@@ -466,7 +514,7 @@ func (s *AteomHerder) Restore(ctx context.Context, req *ateletpb.RestoreRequest)
 		}
 	case ateletpb.CheckpointType_CHECKPOINT_TYPE_LOCAL:
 		// TODO(dberkov): the old pause checkpoint files are not deleted after they are copied to checkpointDir. This needs to be fixed in following PR.
-		localCheckpointDir := ateompath.LocalCheckpointsDir(ns, tmpl, actorID)
+		localCheckpointDir := localCheckpointsDir(ns, tmpl, actorID)
 		snapshotPrefix := req.GetLocalConfig().GetSnapshotPrefix()
 		manifest, err := os.ReadFile(filepath.Join(localCheckpointDir, snapshotPrefix, sandboxManifestName))
 		if err != nil {
@@ -600,7 +648,7 @@ func (s *AteomHerder) prepareOCIBundles(
 	// Populate the per-actor identity directory that gets bind-mounted into
 	// the application containers. Regenerated on every resume, so it carries
 	// the correct per-actor ID even when restoring from the golden snapshot.
-	identityDir := ateompath.ActorIdentityDirPath(actorTemplateNamespace, actorTemplateName, actorID)
+	identityDir := actorIdentityDirPath(actorTemplateNamespace, actorTemplateName, actorID)
 	if err := os.MkdirAll(identityDir, 0o755); err != nil {
 		return fmt.Errorf("while creating actor identity dir: %w", err)
 	}
@@ -746,8 +794,8 @@ func validateCheckpointRequest(req *ateletpb.CheckpointRequest) error {
 			return err
 		}
 	case ateletpb.CheckpointType_CHECKPOINT_TYPE_LOCAL:
-		if req.GetLocalConfig().GetSnapshotPrefix() == "" {
-			return fmt.Errorf("snapshot prefix must be non-empty for type %s", req.GetType().String())
+		if err := resources.ValidateLocalSnapshotPrefix(req.GetLocalConfig().GetSnapshotPrefix()); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("invalid checkpoint type: %v", req.GetType())
@@ -765,8 +813,8 @@ func validateRestoreRequest(req *ateletpb.RestoreRequest) error {
 			return err
 		}
 	case ateletpb.CheckpointType_CHECKPOINT_TYPE_LOCAL:
-		if req.GetLocalConfig().GetSnapshotPrefix() == "" {
-			return fmt.Errorf("snapshot prefix must be non-empty for type %s", req.GetType().String())
+		if err := resources.ValidateLocalSnapshotPrefix(req.GetLocalConfig().GetSnapshotPrefix()); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("invalid checkpoint type: %v", req.GetType())
@@ -832,7 +880,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 func resetActorDirs(actorTemplateNamespace, actorTemplateName, actorID string) error {
 	// Explicitly leave runsc logs dir untouched.
 
-	bundleDir := ateompath.OCIBundleDir(actorTemplateNamespace, actorTemplateName, actorID)
+	bundleDir := ociBundleDir(actorTemplateNamespace, actorTemplateName, actorID)
 	if err := os.RemoveAll(bundleDir); err != nil {
 		return fmt.Errorf("while deleting bundle dir: %w", err)
 	}
@@ -840,7 +888,7 @@ func resetActorDirs(actorTemplateNamespace, actorTemplateName, actorID string) e
 		return fmt.Errorf("while creating bundle dir: %w", err)
 	}
 
-	runscDir := ateompath.RunSCStateDir(actorTemplateNamespace, actorTemplateName, actorID)
+	runscDir := runSCStateDir(actorTemplateNamespace, actorTemplateName, actorID)
 	if err := os.RemoveAll(runscDir); err != nil {
 		return fmt.Errorf("while deleting runsc state dir: %w", err)
 	}
@@ -848,7 +896,7 @@ func resetActorDirs(actorTemplateNamespace, actorTemplateName, actorID string) e
 		return fmt.Errorf("while creating runsc state dir: %w", err)
 	}
 
-	pidFileDir := ateompath.PIDFileDir(actorTemplateNamespace, actorTemplateName, actorID)
+	pidFileDir := pidFileDir(actorTemplateNamespace, actorTemplateName, actorID)
 	if err := os.RemoveAll(pidFileDir); err != nil {
 		return fmt.Errorf("while deleting PID file dir: %w", err)
 	}
@@ -856,7 +904,7 @@ func resetActorDirs(actorTemplateNamespace, actorTemplateName, actorID string) e
 		return fmt.Errorf("while creating PID file dir: %w", err)
 	}
 
-	checkpointDir := ateompath.CheckpointStateDir(actorTemplateNamespace, actorTemplateName, actorID)
+	checkpointDir := checkpointStateDir(actorTemplateNamespace, actorTemplateName, actorID)
 	if err := os.RemoveAll(checkpointDir); err != nil {
 		return fmt.Errorf("while deleting checkpoint-state dir: %w", err)
 	}
@@ -864,7 +912,7 @@ func resetActorDirs(actorTemplateNamespace, actorTemplateName, actorID string) e
 		return fmt.Errorf("while creating checkpoint-state dir: %w", err)
 	}
 
-	restoreStateDir := ateompath.RestoreStateDir(actorTemplateNamespace, actorTemplateName, actorID)
+	restoreStateDir := restoreStateDir(actorTemplateNamespace, actorTemplateName, actorID)
 	if err := os.RemoveAll(restoreStateDir); err != nil {
 		return fmt.Errorf("while deleting restore-state dir: %w", err)
 	}
@@ -874,7 +922,7 @@ func resetActorDirs(actorTemplateNamespace, actorTemplateName, actorID string) e
 
 	// World-readable (0o755): bind-mounted into the actor, whose workload
 	// reads it through the gofer.
-	identityDir := ateompath.ActorIdentityDirPath(actorTemplateNamespace, actorTemplateName, actorID)
+	identityDir := actorIdentityDirPath(actorTemplateNamespace, actorTemplateName, actorID)
 	if err := os.RemoveAll(identityDir); err != nil {
 		return fmt.Errorf("while deleting actor identity dir: %w", err)
 	}
