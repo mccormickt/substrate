@@ -166,3 +166,30 @@ func TestValidateSnapshotURIPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateLocalSnapshotPrefix(t *testing.T) {
+	tests := []struct {
+		name    string
+		prefix  string
+		wantErr bool
+	}{
+		// The producer emits "<actorID>-<RFC3339>-<rand>"; the RFC3339 timestamp
+		// contains colons, which are legal in a single Linux path component.
+		{"valid name", "counter-1-2026-06-24T00:00:00Z-abcd", false},
+		{"empty", "", true},
+		{"dot", ".", true},
+		{"parent traversal", "..", true},
+		{"leading traversal", "../escape", true},
+		{"absolute", "/abs", true},
+		{"nested traversal", "a/../../b", true},
+		{"interior separator", "a/b", true},
+		{"trailing separator", "name/", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateLocalSnapshotPrefix(tt.prefix); (err != nil) != tt.wantErr {
+				t.Errorf("ValidateLocalSnapshotPrefix(%q) err = %v, wantErr %v", tt.prefix, err, tt.wantErr)
+			}
+		})
+	}
+}
