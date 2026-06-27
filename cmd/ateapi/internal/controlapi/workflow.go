@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
@@ -31,6 +32,13 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+)
+
+const (
+	actorLockTTL              = 30 * time.Second
+	actorLockPadding          = 2 * time.Second
+	resumeWorkflowMaxDuration = 120 * time.Second
+	lockRefreshDivisor        = 3
 )
 
 // WorkflowStep represents a single, idempotent operation in a workflow graph.
@@ -155,9 +163,7 @@ func (w *ActorWorkflow) ResumeActor(ctx context.Context, id string, boot bool) (
 	}
 	state := &ResumeState{}
 
-	// Acquire lock and get the timeout context for the workflow
-	// Lock TTL is 30 seconds, with 2 seconds padding for workflow timeout
-	ctx, releaseLock, err := w.acquireActorLock(ctx, id, 30*time.Second, 2*time.Second)
+	ctx, releaseLock, err := w.acquireActorLock(ctx, id, actorLockTTL, resumeWorkflowMaxDuration)
 	if err != nil {
 		return nil, err
 	}
@@ -184,9 +190,7 @@ func (w *ActorWorkflow) SuspendActor(ctx context.Context, id string) (*ateapipb.
 	}
 	state := &SuspendState{}
 
-	// Acquire lock and get the timeout context for the workflow
-	// Lock TTL is 30 seconds, with 2 seconds padding for workflow timeout
-	ctx, releaseLock, err := w.acquireActorLock(ctx, id, 30*time.Second, 2*time.Second)
+	ctx, releaseLock, err := w.acquireActorLock(ctx, id, actorLockTTL, actorLockTTL-actorLockPadding)
 	if err != nil {
 		return nil, err
 	}
@@ -213,9 +217,7 @@ func (w *ActorWorkflow) PauseActor(ctx context.Context, id string) (*ateapipb.Ac
 	}
 	state := &PauseState{}
 
-	// Acquire lock and get the timeout context for the workflow
-	// Lock TTL is 30 seconds, with 2 seconds padding for workflow timeout
-	ctx, releaseLock, err := w.acquireActorLock(ctx, id, 30*time.Second, 2*time.Second)
+	ctx, releaseLock, err := w.acquireActorLock(ctx, id, actorLockTTL, actorLockTTL-actorLockPadding)
 	if err != nil {
 		return nil, err
 	}
@@ -235,13 +237,11 @@ func (w *ActorWorkflow) PauseActor(ctx context.Context, id string) (*ateapipb.Ac
 	return state.Actor, nil
 }
 
-func (w *ActorWorkflow) acquireActorLock(ctx context.Context, id string, ttl time.Duration, padding time.Duration) (context.Context, func(), error) {
+func (w *ActorWorkflow) acquireActorLock(ctx context.Context, id string, ttl time.Duration, maxDuration time.Duration) (context.Context, func(), error) {
 	lockKey := "lock:actor:" + id
 	lockValue := uuid.New().String()
 
-	// Create a child context for the workflow that expires BEFORE the lock
-	workflowTimeout := ttl - padding
-	workflowCtx, cancel := context.WithTimeout(ctx, workflowTimeout)
+	workflowCtx, cancel := context.WithTimeout(ctx, maxDuration)
 
 	acquired, err := w.store.AcquireLock(workflowCtx, lockKey, lockValue, ttl)
 	if err != nil {
@@ -253,8 +253,46 @@ func (w *ActorWorkflow) acquireActorLock(ctx context.Context, id string, ttl tim
 		return nil, nil, status.Error(grpcCodes.Aborted, "another operation is in progress for this actor")
 	}
 
+	renewerDone := make(chan struct{})
+	go func() {
+		defer close(renewerDone)
+
+		refreshInterval := ttl / lockRefreshDivisor
+		lastRefresh := time.Now()
+		ticker := time.NewTicker(refreshInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-workflowCtx.Done():
+				return
+			case <-ticker.C:
+				held, err := w.store.RefreshLock(workflowCtx, lockKey, lockValue, ttl)
+				if err != nil {
+					if workflowCtx.Err() != nil {
+						return
+					}
+					if time.Until(lastRefresh.Add(ttl)) <= refreshInterval {
+						slog.ErrorContext(workflowCtx, "Could not confirm actor lock ownership before expiry; aborting", "key", lockKey, "err", err)
+						cancel()
+						return
+					}
+					slog.WarnContext(workflowCtx, "Failed to refresh actor lock; will retry", "key", lockKey, "err", err)
+					continue
+				}
+				if !held {
+					slog.ErrorContext(workflowCtx, "Lost actor lock mid-workflow; aborting", "key", lockKey)
+					cancel()
+					return
+				}
+				lastRefresh = time.Now()
+			}
+		}
+	}()
+
 	return workflowCtx, func() {
 		cancel()
+		<-renewerDone
 		// Use context.Background() to ensure the lock is released even if the workflow context was canceled.
 		w.store.ReleaseLock(context.Background(), lockKey, lockValue) //nolint:errcheck // best-effort release; the lock TTL is the safety net.
 	}, nil

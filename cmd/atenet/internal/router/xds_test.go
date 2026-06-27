@@ -108,13 +108,38 @@ func TestXdsServer_UpdateSnapshot(t *testing.T) {
 			t.Errorf("Expected domain '*', got %v", vh.GetDomains())
 		}
 
-		if len(vh.GetRoutes()) != 1 {
-			t.Fatalf("Expected 1 route in fallback VirtualHost, got %d", len(vh.GetRoutes()))
+		if len(vh.GetRoutes()) != 3 {
+			t.Fatalf("Expected 3 routes in fallback VirtualHost, got %d", len(vh.GetRoutes()))
 		}
 
-		fallbackRoute := vh.GetRoutes()[0]
+		getRoute := vh.GetRoutes()[0]
+		if got := routeMethod(getRoute); got != "GET" {
+			t.Errorf("Expected first route to match GET, got %q", got)
+		}
+		if got := getRoute.GetRoute().GetRetryPolicy().GetRetryOn(); got != "reset" {
+			t.Errorf("Expected GET retry_on reset, got %q", got)
+		}
+		if got := getRoute.GetRoute().GetRetryPolicy().GetNumRetries().GetValue(); got != 1 {
+			t.Errorf("Expected GET num_retries 1, got %d", got)
+		}
+
+		headRoute := vh.GetRoutes()[1]
+		if got := routeMethod(headRoute); got != "HEAD" {
+			t.Errorf("Expected second route to match HEAD, got %q", got)
+		}
+		if got := headRoute.GetRoute().GetRetryPolicy().GetRetryOn(); got != "reset" {
+			t.Errorf("Expected HEAD retry_on reset, got %q", got)
+		}
+		if got := headRoute.GetRoute().GetRetryPolicy().GetNumRetries().GetValue(); got != 1 {
+			t.Errorf("Expected HEAD num_retries 1, got %d", got)
+		}
+
+		fallbackRoute := vh.GetRoutes()[2]
 		if fallbackRoute.GetMatch().GetPrefix() != "/" {
 			t.Errorf("Expected path mapping prefix '/', got '%s'", fallbackRoute.GetMatch().GetPrefix())
+		}
+		if got := fallbackRoute.GetRoute().GetRetryPolicy(); got != nil {
+			t.Errorf("Expected fallback route retry policy to be nil, got %v", got)
 		}
 	}
 
@@ -136,6 +161,15 @@ func TestXdsServer_UpdateSnapshot(t *testing.T) {
 			t.Errorf("Expected address '0.0.0.0', got %s", sa.GetAddress())
 		}
 	}
+}
+
+func routeMethod(route *routev3.Route) string {
+	for _, header := range route.GetMatch().GetHeaders() {
+		if header.GetName() == ":method" {
+			return header.GetStringMatch().GetExact()
+		}
+	}
+	return ""
 }
 
 func TestXdsServer_UpdateSnapshot_WithHttps(t *testing.T) {

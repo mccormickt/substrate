@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"strconv"
 	"sync"
 	"time"
@@ -52,6 +53,7 @@ import (
 	endpointgrpc "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
 	listenergrpc "github.com/envoyproxy/go-control-plane/envoy/service/listener/v3"
 	routegrpc "github.com/envoyproxy/go-control-plane/envoy/service/route/v3"
+	matcherv3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	cachev3 "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
@@ -362,23 +364,53 @@ func (x *XdsServer) buildRoutes() *routev3.RouteConfiguration {
 				Name:    "local_service",
 				Domains: []string{"*"},
 				Routes: []*routev3.Route{
-					{
-						Match: &routev3.RouteMatch{
-							PathSpecifier: &routev3.RouteMatch_Prefix{
-								Prefix: "/",
-							},
-						},
-						Action: &routev3.Route_Route{
-							Route: &routev3.RouteAction{
-								ClusterSpecifier: &routev3.RouteAction_Cluster{
-									Cluster: "dynamic_forward_proxy_cluster",
-								},
-								Timeout: durationpb.New(10 * time.Second),
-							},
-						},
+					buildActorRoute(http.MethodGet, actorSafeMethodRetryPolicy()),
+					buildActorRoute(http.MethodHead, actorSafeMethodRetryPolicy()),
+					buildActorRoute("", nil),
+				},
+			},
+		},
+	}
+}
+
+func buildActorRoute(method string, retryPolicy *routev3.RetryPolicy) *routev3.Route {
+	match := &routev3.RouteMatch{
+		PathSpecifier: &routev3.RouteMatch_Prefix{
+			Prefix: "/",
+		},
+	}
+	if method != "" {
+		match.Headers = []*routev3.HeaderMatcher{
+			{
+				Name: ":method",
+				HeaderMatchSpecifier: &routev3.HeaderMatcher_StringMatch{
+					StringMatch: &matcherv3.StringMatcher{
+						MatchPattern: &matcherv3.StringMatcher_Exact{Exact: method},
 					},
 				},
 			},
+		}
+	}
+
+	return &routev3.Route{
+		Match: match,
+		Action: &routev3.Route_Route{
+			Route: &routev3.RouteAction{
+				ClusterSpecifier: &routev3.RouteAction_Cluster{
+					Cluster: "dynamic_forward_proxy_cluster",
+				},
+				Timeout:     durationpb.New(10 * time.Second),
+				RetryPolicy: retryPolicy,
+			},
+		},
+	}
+}
+
+func actorSafeMethodRetryPolicy() *routev3.RetryPolicy {
+	return &routev3.RetryPolicy{
+		RetryOn: "reset",
+		NumRetries: &wrapperspb.UInt32Value{
+			Value: 1,
 		},
 	}
 }

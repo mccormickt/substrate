@@ -88,6 +88,12 @@ type Interface interface {
 	// Returns an error only on database failure.
 	ReleaseLock(ctx context.Context, key string, value string) error
 
+	// RefreshLock extends a distributed lock's TTL if the stored value matches the passed value.
+	// Returns true if the lock was still held by this value and was refreshed.
+	// Returns false if the lock was missing or held by another value.
+	// Returns an error only on database failure.
+	RefreshLock(ctx context.Context, key string, value string, ttl time.Duration) (bool, error)
+
 	// DebugClearAll drop all data from the database. Useful for debugging / local testing/
 	DebugClearAll(ctx context.Context) error
 }

@@ -762,6 +762,77 @@ func TestReleaseLock_Unsafe(t *testing.T) {
 	}
 }
 
+func TestRefreshLock_ExtendsTTL(t *testing.T) {
+	mr, s, ctx := setupTest(t)
+	defer mr.Close()
+
+	key := "test-lock"
+	value1 := "token-1"
+	value2 := "token-2"
+	ttl := 5 * time.Second
+
+	acquired, err := s.AcquireLock(ctx, key, value1, ttl)
+	if err != nil {
+		t.Fatalf("AcquireLock failed: %v", err)
+	}
+	if !acquired {
+		t.Fatalf("expected lock to be acquired")
+	}
+
+	mr.FastForward(4 * time.Second)
+	refreshed, err := s.RefreshLock(ctx, key, value1, ttl)
+	if err != nil {
+		t.Fatalf("RefreshLock failed: %v", err)
+	}
+	if !refreshed {
+		t.Fatalf("expected lock to be refreshed")
+	}
+
+	mr.FastForward(4 * time.Second)
+	acquired, err = s.AcquireLock(ctx, key, value2, ttl)
+	if err != nil {
+		t.Fatalf("AcquireLock failed: %v", err)
+	}
+	if acquired {
+		t.Fatalf("expected lock to still be held after refresh")
+	}
+
+	mr.FastForward(2 * time.Second)
+	acquired, err = s.AcquireLock(ctx, key, value2, ttl)
+	if err != nil {
+		t.Fatalf("AcquireLock failed: %v", err)
+	}
+	if !acquired {
+		t.Fatalf("expected refreshed lock to expire")
+	}
+}
+
+func TestRefreshLock_WrongValue(t *testing.T) {
+	mr, s, ctx := setupTest(t)
+	defer mr.Close()
+
+	key := "test-lock"
+	value1 := "token-1"
+	value2 := "token-2"
+	ttl := 10 * time.Second
+
+	acquired, err := s.AcquireLock(ctx, key, value1, ttl)
+	if err != nil {
+		t.Fatalf("AcquireLock failed: %v", err)
+	}
+	if !acquired {
+		t.Fatalf("expected lock to be acquired")
+	}
+
+	refreshed, err := s.RefreshLock(ctx, key, value2, ttl)
+	if err != nil {
+		t.Fatalf("RefreshLock failed: %v", err)
+	}
+	if refreshed {
+		t.Fatalf("expected RefreshLock with wrong value to return false")
+	}
+}
+
 func TestAcquireLock_TTLExpiration(t *testing.T) {
 	mr, s, ctx := setupTest(t)
 	defer mr.Close()

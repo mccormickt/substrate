@@ -673,3 +673,19 @@ func (s *Persistence) ReleaseLock(ctx context.Context, key string, value string)
 	}
 	return nil
 }
+
+func (s *Persistence) RefreshLock(ctx context.Context, key string, value string, ttl time.Duration) (bool, error) {
+	var luaRefresh = redis.NewScript(`
+		if redis.call("get", KEYS[1]) == ARGV[1] then
+			return redis.call("pexpire", KEYS[1], ARGV[2])
+		else
+			return 0
+		end
+	`)
+
+	refreshed, err := luaRefresh.Run(ctx, s.rdb, []string{key}, value, ttl.Milliseconds()).Int()
+	if err != nil {
+		return false, fmt.Errorf("while refreshing lock for %q: %w", key, err)
+	}
+	return refreshed == 1, nil
+}
