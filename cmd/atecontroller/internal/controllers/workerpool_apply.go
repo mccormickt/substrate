@@ -396,12 +396,14 @@ var workerGvisorCapabilities = []corev1.Capability{
 	"FOWNER", "CHOWN", "NET_RAW", "SETFCAP", "IPC_LOCK",
 }
 
-// workerMicroVMCapabilities retains virtiofsd's eight default child
-// capabilities, plus NET_ADMIN and SYS_ADMIN for worker networking and mounts.
-// MKNOD and FSETID preserve guest device-node creation and setgid files.
-// DAC_READ_SEARCH is not granted: virtiofsd only adds it to its child set to
-// open file handles, and virtiofsdArgs in cmd/ateworker-microvm/internal/kata
-// turns file handles off. Unlike gVisor, this runtime does not need NET_RAW.
+// workerMicroVMCapabilities retains virtiofsd's seven child capabilities
+// (virtiofsdArgs in cmd/ateworker-microvm/internal/kata drops MKNOD with
+// --modcaps=-mknod and turns file handles off so DAC_READ_SEARCH is not
+// requested), plus NET_ADMIN and SYS_ADMIN for worker networking and mounts.
+// FSETID preserves setgid files. MKNOD is not granted: guest containers cannot
+// add MKNOD, the virtio-fs share is mounted nodev, and 0:0 overlay whiteouts
+// have not required CAP_MKNOD since Linux 5.8. Unlike gVisor, this runtime
+// does not need NET_RAW.
 //
 // SETPCAP stays because virtiofsd's serving child drops its bounding set with
 // PR_CAPBSET_DROP, which libcap-ng only issues while CAP_SETPCAP is effective.
@@ -414,7 +416,7 @@ var workerGvisorCapabilities = []corev1.Capability{
 // plugin (see maybeApplyMicroVMPodShape).
 var workerMicroVMCapabilities = []corev1.Capability{
 	"NET_ADMIN", "SYS_ADMIN", "SETUID", "SETGID", "DAC_OVERRIDE",
-	"FOWNER", "CHOWN", "MKNOD", "SETFCAP", "FSETID", "SETPCAP",
+	"FOWNER", "CHOWN", "SETFCAP", "FSETID", "SETPCAP",
 }
 
 // workerSecurityContext returns the worker container security context for a sandbox
@@ -444,7 +446,7 @@ func workerSecurityContext(class atev1.SandboxClass) *corev1ac.SecurityContextAp
 		// requests from it, so its namespaces are part of the guest-to-host
 		// boundary, while the pod-wide profile mostly confines worker, which we
 		// trust. Both guest-facing processes confine themselves anyway, virtiofsd
-		// with its own seccomp filter and eight capabilities, cloud-hypervisor with
+		// with its own seccomp filter and seven capabilities, cloud-hypervisor with
 		// per-thread filters.
 		return sc.
 			WithCapabilities(corev1ac.Capabilities().

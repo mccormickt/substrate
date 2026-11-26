@@ -37,11 +37,11 @@ import (
 // the defaults has to be made deliberately in both places.
 var (
 	gvisorWorkerCapabilities  = []corev1.Capability{"NET_ADMIN", "SYS_ADMIN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "CHOWN", "NET_RAW", "SETFCAP", "IPC_LOCK"}
-	microVMWorkerCapabilities = []corev1.Capability{"NET_ADMIN", "SYS_ADMIN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "CHOWN", "MKNOD", "SETFCAP", "FSETID", "SETPCAP"}
-	// virtiofsd's default child set: what its serving child keeps in its
-	// permitted and effective sets after it drops the rest. With file handles
-	// off it does not add DAC_READ_SEARCH.
-	virtiofsdChildCapabilities = []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETGID", "SETUID", "MKNOD", "SETFCAP"}
+	microVMWorkerCapabilities = []corev1.Capability{"NET_ADMIN", "SYS_ADMIN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "CHOWN", "SETFCAP", "FSETID", "SETPCAP"}
+	// virtiofsd's child set: what its serving child keeps in its permitted and
+	// effective sets after it drops the rest. With --modcaps=-mknod and file
+	// handles off, it omits MKNOD and DAC_READ_SEARCH.
+	virtiofsdChildCapabilities = []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETGID", "SETUID", "SETFCAP"}
 )
 
 // capabilityBits are the Linux capability numbers (include/uapi/linux/capability.h)
@@ -124,7 +124,7 @@ func processesNamed(t *testing.T, procs []procstatus.Process, name string) []pro
 
 // assertVirtiofsdChild checks virtiofsd's serving child. virtiofsd forks it
 // into new namespaces and then only waits for it, so the child is the
-// virtiofsd whose parent is also virtiofsd. The child keeps its eight
+// virtiofsd whose parent is also virtiofsd. The child keeps its seven
 // capabilities in the permitted and effective sets and clears its bounding set
 // with PR_CAPBSET_DROP, which libcap-ng only issues while CAP_SETPCAP is
 // effective. A worker without SETPCAP leaves the child's bounding set at the
