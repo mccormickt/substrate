@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	"go.ate.dev/substrate/cmd/ate-setup/internal/config"
 	"go.ate.dev/substrate/cmd/ate-setup/internal/images"
 	"go.ate.dev/substrate/cmd/ate-setup/internal/kube"
+	"go.ate.dev/substrate/cmd/ate-setup/internal/kustomize"
 )
 
 // Splicing the provider selection into the real egress manifest replaces the
@@ -1085,6 +1087,7 @@ func TestRenderAgentgatewayStaticMTLS(t *testing.T) {
 				t.Fatal("static-mtls config has no TLS CONNECT listener")
 			}
 			assertAgentgatewayClientRoot(t, connectTLSListener)
+			assertAgentgatewayUpstreamTunnelTLS(t, gateway)
 
 			t.Run("without IDs", func(t *testing.T) {
 				cfg.IngressAllowedSPIFFEIDs = nil
@@ -1135,6 +1138,78 @@ func assertAgentgatewayClientRoot(t *testing.T, config map[string]interface{}) {
 	}
 	if _, exists := tls["allowedClientSpiffeIds"]; exists {
 		t.Error("allowlist must use the existing network authorization policy")
+	}
+}
+
+func assertAgentgatewayUpstreamTunnelTLS(t *testing.T, gateway map[string]interface{}) {
+	t.Helper()
+	backends, ok := gateway["backends"].([]interface{})
+	if !ok {
+		t.Fatal("rendered AgentGateway config has no backends list")
+	}
+	for _, item := range backends {
+		backend, ok := item.(map[string]interface{})
+		if !ok || backend["name"] != "dynamic" {
+			continue
+		}
+		policies, ok := backend["policies"].(map[string]interface{})
+		if !ok {
+			t.Fatal("dynamic backend has no policies")
+		}
+		tunnel, ok := policies["backendTunnel"].(map[string]interface{})
+		if !ok {
+			t.Fatal("dynamic backend has no backendTunnel policy")
+		}
+		if got := tunnel["mode"]; got != "connect" {
+			t.Errorf("backendTunnel mode = %v, want connect", got)
+		}
+		tunnelPolicies, ok := tunnel["policies"].(map[string]interface{})
+		if !ok {
+			t.Fatal("backendTunnel has no policies")
+		}
+		backendTLS, ok := tunnelPolicies["backendTLS"].(map[string]interface{})
+		if !ok {
+			t.Fatal("backendTunnel has no backendTLS policy")
+		}
+		if got := backendTLS["cert"]; got != "/run/podidentity.podcert.ate.dev/credential-bundle.pem" {
+			t.Errorf("backendTunnel backendTLS cert = %v, want podidentity credential bundle", got)
+		}
+		if got := backendTLS["key"]; got != "/run/podidentity.podcert.ate.dev/credential-bundle.pem" {
+			t.Errorf("backendTunnel backendTLS key = %v, want podidentity credential bundle", got)
+		}
+		if got := backendTLS["root"]; got != "/run/podidentity.podcert.ate.dev/trust-bundle.pem" {
+			t.Errorf("backendTunnel backendTLS root = %v, want podidentity trust bundle", got)
+		}
+		for _, forbidden := range []string{"insecureHost", "insecure", "hostname"} {
+			if v, exists := backendTLS[forbidden]; exists {
+				t.Errorf("backendTunnel backendTLS must not set %s (got %v)", forbidden, v)
+			}
+		}
+		return
+	}
+	t.Fatal("rendered AgentGateway config has no dynamic backend")
+}
+
+func TestAgentgatewayRenderedOverlaysUpstreamTunnelTLS(t *testing.T) {
+	root := repoRoot(t)
+	for _, overlay := range []string{
+		"agentgateway",
+		"kind-agentgateway",
+		"agentgateway-router",
+		"agentgateway-egress",
+	} {
+		t.Run(overlay, func(t *testing.T) {
+			rendered, err := kustomize.Build(filepath.Join(root, installDir, overlay))
+			if err != nil {
+				t.Fatalf("rendering %s: %v", overlay, err)
+			}
+			cm := agentgatewayRouterConfig(t, rendered)
+			var gateway map[string]interface{}
+			if err := yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &gateway); err != nil {
+				t.Fatalf("parsing AgentGateway config: %v", err)
+			}
+			assertAgentgatewayUpstreamTunnelTLS(t, gateway)
+		})
 	}
 }
 

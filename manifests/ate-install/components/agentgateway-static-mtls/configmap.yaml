@@ -51,6 +51,7 @@ data:
       policies:
         http:
           version: HTTP/1.1
+        # substrateIngress verifies the worker pod's SPIFFE URI SAN per connection.
         backendTunnel:
           proxy:
             backend: /dynamic
@@ -60,7 +61,6 @@ data:
               cert: /run/podidentity.podcert.ate.dev/credential-bundle.pem
               key: /run/podidentity.podcert.ate.dev/credential-bundle.pem
               root: /run/podidentity.podcert.ate.dev/trust-bundle.pem
-              insecureHost: true
 
     routes:
     - name: substrate-actors
