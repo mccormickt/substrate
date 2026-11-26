@@ -17,6 +17,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -119,9 +120,9 @@ func readFilesystemFile(path string) (filesystemFile, error) {
 	return filesystemFile{Path: path, UID: stat.Uid, GID: stat.Gid, Mode: uint32(stat.Mode) & 0o7777, Contents: string(data)}, nil
 }
 
-// checkNonRootFilesystem also exercises virtiofsd's credential switching and
-// checks that device-node creation is denied. The caller enables it only on
-// the microVM lane.
+// checkNonRootFilesystem also exercises virtiofsd's credential switching,
+// checks that device-node creation is denied, and confirms FIFO and Unix
+// socket creation still work. The caller enables it only on the microVM lane.
 func checkNonRootFilesystem() error {
 	self, err := os.Executable()
 	if err != nil {
@@ -152,6 +153,34 @@ func checkNonRootFilesystem() error {
 	}
 	if err := syscall.Mknod("/var/worker-security/null", syscall.S_IFCHR|0o600, (1<<8)|3); !errors.Is(err, syscall.EPERM) {
 		return fmt.Errorf("guest device-node creation: got %v, want EPERM", err)
+	}
+	// FIFOs and Unix domain sockets do not require CAP_MKNOD on Linux; verify
+	// both still work over the virtio-fs share without MKNOD on the worker.
+	const fifoPath = "/var/worker-security/pipe"
+	_ = os.Remove(fifoPath)
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		return fmt.Errorf("guest FIFO creation: %w", err)
+	}
+	defer func() { _ = os.Remove(fifoPath) }()
+	if st, err := os.Lstat(fifoPath); err != nil {
+		return fmt.Errorf("guest FIFO stat: %w", err)
+	} else if st.Mode()&os.ModeNamedPipe == 0 {
+		return fmt.Errorf("guest FIFO stat: mode=%v, want named pipe", st.Mode())
+	}
+	const sockPath = "/var/worker-security/sock"
+	_ = os.Remove(sockPath)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return fmt.Errorf("guest Unix socket creation: %w", err)
+	}
+	defer func() {
+		_ = ln.Close()
+		_ = os.Remove(sockPath)
+	}()
+	if st, err := os.Lstat(sockPath); err != nil {
+		return fmt.Errorf("guest Unix socket stat: %w", err)
+	} else if st.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("guest Unix socket stat: mode=%v, want socket", st.Mode())
 	}
 	return nil
 }

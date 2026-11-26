@@ -146,6 +146,8 @@ func virtiofsdArgs(o VirtiofsdOptions) []string {
 		// references an inode with no findable path, such as a live-rewritten
 		// trust bundle. guest-error returns EIO on those inodes instead.
 		"--migration-on-error", "guest-error",
+		// Drop CAP_MKNOD from the default capability set.
+		"--modcaps=-mknod",
 	}
 }
 
